@@ -1,0 +1,280 @@
+#include <cstdlib>
+#include <iostream>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/siginfo.h>
+#include <sys/neutrino.h>
+#include <pthread.h>
+#include <errno.h>
+#include <unistd.h>
+#include <semaphore.h>
+
+using namespace std;
+
+// Имя именованной памяти
+#define NAMED_MEMORY "/namedMemory"
+// Длительность работы приложения в секундах
+#define END_TIME 5 //время работы приложения Т сек
+// Длительность одного тика t в наносекундах
+#define DUR_TICK_T 120000000 // длительность тика 0,12c в наносекундах
+// Длительность одного тика dt в наносекундах
+#define DUR_TICK_DT 400000000 // длительность тика 0,4c в наносекундах
+// Номер сигнала наступления нового тика
+#define TICK_SIGNAL_SIGUSR1 SIGUSR1 //номер сигнала уведомления истечения тика
+
+// Структура данных с информацией о течении времени приложения
+struct Clock {
+	int duration_seconds;	    // Длительность работы приложения в секундах
+	long tick_duration_t;       // Продолжительность тика t
+	long tick_duration_dt;      // Продолжительность интервала dt
+	int current_t_tick_count;   // Номер текущего тика t
+	int current_dt_tick_count;  // Номер текущего тика dt
+};
+
+// Структура данных, хранящаяся в именованной памяти NAMED_MEMORY
+struct namedMemory {
+	double p;							// параметр объекта
+	pthread_barrier_t syncBarrier;		// барьер для синхронизации P1 и P2
+	pthread_barrier_t startBarrier;		// барьер старта таймеров
+	Clock timeInfo;						// информация о течении времени ПРВ
+	int tickSigusrP1;					// номер сигнала о наступлении нового тика
+	int pidP1;							// ID процесса P1
+	int chidP1;						    // ID канала процесса P1
+	int pidP2;							// ID процесса P2
+	pthread_mutexattr_t MutexAttr;	 	// атрибутная запись мутекса
+	pthread_mutex_t Mutex;			 	// мутекс доступа к именованной памяти
+	sem_t sem;							// семафор для синхронизации процессов по времени t = 0
+};
+
+// Для создания памяти
+struct namedMemory *createNamedMemory(const char* name);
+// Подготовка к запуску периодического таймера уведомления импульсом об истечении тика часов ПРВ
+void setPeriodicTimer(timer_t* periodicTimer, struct itimerspec* periodicTimerStruct);
+// Подготовка к запуску однократного таймера завершения ПРВ с уведомлением импульсом
+void setTimerStop(timer_t* stopTimer, struct itimerspec* stopPeriod);
+// Имитация изменения параметра р
+double F(double t);
+// Обработчик сигналов от таймера
+void deadHandler(int signo);
+// Сообщение об ошибке и завершение процесса
+void error(const char *msg);
+
+// Глобальные переменные
+struct namedMemory *namedMemoryPtr; // указатель именованной памяти
+FILE *trendFile; // файл с трендом параметра p
+
+int main(int argc, char *argv[]) {
+	int pid2 = getpid();
+	cout << "P2: начинает работу, pid2 = " << pid2 << endl;
+
+	// Получение аргументов командной строки
+	int parentPid = atoi(argv[0]);
+	int parentChid = atoi(argv[1]);
+	cout << "P2: получил от P1 его pid1 = " << parentPid << " и chid1 = " << parentChid << endl;
+
+	// Присоединение именованной памяти
+	namedMemoryPtr = createNamedMemory(NAMED_MEMORY); // "/namedMemory"
+	cout << "P2: создал именованную память" << endl;
+
+	// Установка параметров времени приложения
+	namedMemoryPtr->timeInfo.duration_seconds = END_TIME;
+	namedMemoryPtr->timeInfo.tick_duration_t = DUR_TICK_T;
+	namedMemoryPtr->timeInfo.tick_duration_dt = DUR_TICK_DT;
+	namedMemoryPtr->timeInfo.current_t_tick_count = 0;
+	namedMemoryPtr->timeInfo.current_dt_tick_count = 0;
+
+	namedMemoryPtr->tickSigusrP1 = TICK_SIGNAL_SIGUSR1;
+
+	cout << "P2: параметры именованной памяти установлены" << endl;
+
+	// Барьер для синхронизации старта таймеров в процессах
+	pthread_barrierattr_t startAttr;
+	pthread_barrierattr_init(&startAttr);
+	pthread_barrierattr_setpshared(&startAttr, PTHREAD_PROCESS_SHARED); // разделяемый барьер
+	pthread_barrier_init(&(namedMemoryPtr->startBarrier), &startAttr, 2); // 2 места
+
+	// Инициализация атрибутной записи разделяемого мутекса
+	if(pthread_mutexattr_init(&namedMemoryPtr->MutexAttr) != EOK) {
+		error("Р2: ошибка pthread_mutexattr_init()");
+	}
+	cout << "Р2: pthread_mutexattr_init(): OK!" << endl;
+
+	// Установить в атрибутной записи мутекса свойство "разделяемый"
+	if(pthread_mutexattr_setpshared(&namedMemoryPtr->MutexAttr, PTHREAD_PROCESS_SHARED) != EOK) {
+		error("Р2: ошибка pthread_mutexattr_setpshared()");
+	}
+	cout << "Р2: pthread_mutexattr_setpshared(): OK!" << endl;
+
+	// Инициализация разделяемого мутекса
+	if(pthread_mutex_init(&namedMemoryPtr->Mutex, &namedMemoryPtr->MutexAttr) != EOK) {
+		error("Р2: Ошибка pthread_mutex_init()");
+	}
+	cout << "Р2: pthread_mutex_init(): OK!" << endl;
+
+	// Инициализация разделяемого семафора
+	if (sem_init(&namedMemoryPtr->sem, 1, 1) != 0) { // pshared = 1, initial value = 1
+	    error("P2: ошибка sem_init()");
+	}
+	cout << "Р2: pthread_mutex_init(): OK!" << endl;
+
+	// Подключение к каналу P1 и отправка информации
+	int coidToP1 = ConnectAttach(0, parentPid, parentChid, _NTO_SIDE_CHANNEL, 0);
+	if(coidToP1 == -1)
+	{
+		error("P2: ошибка подключения к каналу P1");
+	} else {
+		cout << "P2: успешно подключился к каналу P1, его chid1 = " << parentChid << endl;
+    }
+
+	// Формирование сообщения: "Named memory is created"
+	char namedMemoryMsg[128] = "Named memory is created";
+
+	// Отправка сообщения P1 о готовности памяти
+	char reply[128] = {};
+	int msgSend = MsgSend(coidToP1, namedMemoryMsg, strlen(namedMemoryMsg) + 1, reply, sizeof(reply));
+	if(msgSend == -1)
+	{
+		ConnectDetach(coidToP1);
+		error("P2: ошибка при отправке сообщения P1");
+	}
+	cout << "P2: отправил сообщение P1, получил ответ: \"" << reply << "\"" << endl;
+
+	// Подготовка однократного таймера stopTimer завершения работы ПРВ через END_TIME сек
+	timer_t stopTimer;
+	struct itimerspec stopPeriod;
+
+	// Создаем таймер отслеживания завершения работы
+	setTimerStop(&stopTimer, &stopPeriod);
+
+	// Подготовка периодического таймера periodicTimer наступления нового тика ПРС через t сек
+	timer_t periodicTimer;
+	struct itimerspec periodicTimerStruct;
+
+	// Создание периодического таймера наступления нового тика с уведомлением импульсом
+	setPeriodicTimer(&periodicTimer, &periodicTimerStruct);
+
+	// Установка маски сигнала SIGUSR1
+   	sigset_t set;
+   	sigemptyset(&set);
+   	sigaddset(&set, TICK_SIGNAL_SIGUSR1);
+
+   	// Открываем файл trend.txt
+	if((trendFile = fopen("/home/host/Trend/trend.txt", "w")) == NULL){
+		error("P2: ошибка открытия файла для записи тренда, Р2 завершён");
+	}
+	cout << "Р2: открыт файл тренда trend.txt" << endl;
+
+	// Р2 ожидает готовности процесса Р1 и запускает таймеры тиков часов ПРВ и завершения работы
+	cout << "P2: подошёл к барьеру" << endl;
+	pthread_barrier_wait(&(namedMemoryPtr->startBarrier));
+	cout << "P2: прошёл барьер" << endl;
+
+	// Запуск однократного относительного таймера сигнала SIGUSR2 окончания работы приложения через Т сек
+	timer_settime(stopTimer, 0, &stopPeriod, NULL);
+
+	// Запуск многократного относительного таймера сигнала SIGUSR1 наступления нового тика ПРВ каждые dt сек
+	timer_settime(periodicTimer, 0, &periodicTimerStruct, NULL);
+
+	usleep(100000);
+	pthread_mutex_lock(&(namedMemoryPtr->Mutex));
+	fprintf(trendFile, "%f\t%f\n", namedMemoryPtr->p, 0.);
+	pthread_mutex_unlock(&(namedMemoryPtr->Mutex));
+
+	while(true) {
+		if (SignalWaitinfo(&set, NULL) == TICK_SIGNAL_SIGUSR1) {
+			namedMemoryPtr->timeInfo.current_dt_tick_count++; // увеличиваем текущее время часов ПРВ на 1 тик
+			double currentTickTime = namedMemoryPtr->timeInfo.current_dt_tick_count; // сохраняем в переменную
+			double tickDuration = namedMemoryPtr->timeInfo.tick_duration_dt / 1000000000.; // продолжительность одного тика в секундах
+
+			pthread_mutex_lock(&(namedMemoryPtr->Mutex));
+			fprintf(trendFile, "%f\t%f\n", namedMemoryPtr->p, currentTickTime * tickDuration);
+			pthread_mutex_unlock(&(namedMemoryPtr->Mutex));
+		}
+	}
+
+	cout << "P2: завершает работу" << endl; // никогда не доходит до этой строки кода
+	return EXIT_SUCCESS;
+}
+
+// Функция создания именованной памяти
+struct namedMemory* createNamedMemory(const char* name) {
+	struct namedMemory *namedMemoryPtr;
+	int fd; //дескриптор именованной памяти
+
+	// Создание именованной памяти
+	cout << "P2: shm_open - открытие именованной памяти" << endl;
+
+	if ((fd = shm_open(name, O_RDWR | O_CREAT, 0777)) == -1)
+		error("P2: Ошибка shm_open");
+	// Установка размера именованной памяти
+	if (ftruncate(fd, 0) == -1 || ftruncate(fd, sizeof(struct namedMemory)) == -1)
+		error("P2: Ошибка ftruncate");
+	//Отображение разделяемой именованной памяти в адресное пространство процесса
+	if ((namedMemoryPtr = (namedMemory*) mmap(NULL, sizeof(struct namedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) == MAP_FAILED)
+		error("P2: Ошибка mmap");
+
+	cout << "P2: shm_open - именованная память построена" << endl;
+
+	return namedMemoryPtr;
+}
+
+// Функция создания таймера тика с уведомлением импульсом
+void setPeriodicTimer(timer_t* periodicTimer, struct itimerspec* periodicTimerStruct) {
+	   struct sigevent event;
+	   SIGEV_SIGNAL_INIT(&event, SIGUSR1); // сигналы
+       timer_create(CLOCK_REALTIME, &event,  periodicTimer);
+
+	   // Установить интервал срабатывания периодического таймера тика в системном времени
+	   periodicTimerStruct->it_value.tv_sec = 0;
+	   periodicTimerStruct->it_value.tv_nsec = DUR_TICK_DT;
+	   periodicTimerStruct->it_interval.tv_sec = 0;
+	   periodicTimerStruct->it_interval.tv_nsec =  DUR_TICK_DT;
+}
+
+// Функция запуска таймера для завершения работы приложения по сигналу SIGUSR2
+void setTimerStop(timer_t *stopTimer, struct itimerspec *stopPeriod) {
+	   struct sigevent  event;
+	   SIGEV_SIGNAL_INIT(&event, SIGUSR2);
+	   timer_create(CLOCK_REALTIME, &event, stopTimer);
+
+	   // Установить время срабатывания однократного таймера
+	   stopPeriod->it_value.tv_sec = END_TIME; // момент времени завершения приложения
+	   stopPeriod->it_value.tv_nsec = 0;
+	   stopPeriod->it_interval.tv_sec = 0;
+	   stopPeriod->it_interval.tv_nsec = 0;
+
+	   // Установка обработчика сигнала SIGUSR2 завершения приложения
+	   	struct sigaction act;					 // структура установки обработчика
+	   	sigset_t set;							 // набор маски сигналов
+	   	sigemptyset(&set);						 // очистить маску сигналов
+	   	sigaddset(&set, SIGUSR2);				 // установить маску сигнала SIGUSR2
+	   	act.sa_flags = 0;
+	   	act.sa_mask = set;
+	   	act.__sa_un._sa_handler = &deadHandler;  // установка обработчика
+	   	sigaction(SIGUSR2, &act, NULL);			 // установить обработчик SIGUSR2
+}
+
+// Закрывает все используемые ресурсы при завершении работы процесса
+void deadHandler(int signo) {
+	if (signo == SIGUSR2) {
+		cout << "P2: пришёл сигнал завершения процесса" << endl;
+        // Закрыть файл
+        if (trendFile != NULL) {
+            fclose(trendFile);
+            trendFile = NULL;
+        }
+		exit(EXIT_SUCCESS);
+	}
+}
+
+// Вывод ошибки и завершение работы процесса
+void error(const char *msg) {
+    cout << msg << endl;
+    exit(EXIT_FAILURE);
+}

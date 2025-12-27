@@ -1,0 +1,21 @@
+#include <cstdlib>
+#include <iostream>
+
+using namespace std;
+
+/* Определение функций для создания нитей Т1 и Т2 */
+void* f1(void* args); // функция для нити Т1
+void* f2(void* args); // функция для нити Т2
+
+// Разделяемые нитями буфер формирования текста и флаги готовности текста
+char result_text[200];
+bool flag_f1 = false; // флаг готовности буфера текста для нити Т1
+bool flag_f2 = false; // флаг готовности буфера текста для нити Т2
+
+int main(int argc, char *argv[]) {
+	cout << "Hello, world!" << endl;
+	return EXIT_SUCCESS;
+}
+
+void* f1(void* args) {}
+void* f1(void* args) {}

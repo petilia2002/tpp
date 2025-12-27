@@ -1,0 +1,33 @@
+#include <cstdlib>
+#include <iostream>
+#include <pthread.h>
+
+using namespace std;
+
+/* Определение функций для создания нитей Т1 и Т2 */
+void* f1(void* args); // функция для нити Т1
+void* f2(void* args); // функция для нити Т2
+
+// Разделяемые нитями буфер формирования текста и флаги готовности текста
+char result_text[200];
+bool flag_f1 = false; // флаг готовности буфера текста для нити Т1
+bool flag_f2 = false; // флаг готовности буфера текста для нити Т2
+
+/***************************************< MAIN >********************************************/
+int main(int argc, char *argv[]) {
+	cout << "Hello, world!" << endl;
+
+	pthread_t thread_id;
+	pthread_create(thread_id, NULL, f1, result_text);
+
+	return EXIT_SUCCESS;
+}
+
+/***************************************< F1 >**********************************************/
+void* f1(void* args) {}
+
+/***************************************< F2 >**********************************************/
+void* f2(void* args) {}
+
+
+

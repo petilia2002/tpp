@@ -1,0 +1,13 @@
+#include <cstdlib>
+#include <iostream>
+#include <math.h>
+#include <unistd.h>
+
+
+int main(int argc, char *argv[]) {
+	int x = 0;
+	std::cout << "Welcome to the QNX Momentics IDE" << std::endl;
+	sleep(30);
+	std::cout << "sin(x) = " << sin(x) << std::endl;
+	return EXIT_SUCCESS;
+}

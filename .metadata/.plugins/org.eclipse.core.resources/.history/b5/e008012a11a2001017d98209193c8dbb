@@ -1,0 +1,12 @@
+#include <cstdlib>
+#include <iostream>
+
+using namespace std;
+
+void* f1(void* args);
+void* f2(void* args);
+
+int main(int argc, char *argv[]) {
+	cout << "Hello, world!" << endl;
+	return EXIT_SUCCESS;
+}

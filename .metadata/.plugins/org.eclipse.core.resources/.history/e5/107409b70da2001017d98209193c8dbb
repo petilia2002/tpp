@@ -1,0 +1,9 @@
+#include <cstdlib>
+#include <iostream>
+
+using namespace std;
+
+int main(int argc, char *argv[]) {
+	cout << "Welcome to the QNX Momentics IDE" << endl;
+	return EXIT_SUCCESS;
+}

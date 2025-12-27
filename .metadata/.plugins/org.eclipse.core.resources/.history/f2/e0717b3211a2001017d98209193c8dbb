@@ -1,0 +1,13 @@
+#include <cstdlib>
+#include <iostream>
+
+using namespace std;
+
+/* Определение функций для создания нитей Т1 и Т2 */
+void* f1(void* args);
+void* f2(void* args);
+
+int main(int argc, char *argv[]) {
+	cout << "Hello, world!" << endl;
+	return EXIT_SUCCESS;
+}
